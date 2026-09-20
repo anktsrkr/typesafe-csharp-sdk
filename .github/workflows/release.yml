@@ -1,80 +1,70 @@
-name: Release & Publish
+name: Release GA
+
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
-      publish_beta:
-        description: Publish a verified beta package
-        type: boolean
-        default: true
-      version_suffix:
-        description: Prerelease label
+      version_tag:
+        description: 'Release version tag to cut (e.g. v0.3.0)'
+        required: true
         type: string
-        default: beta
 
 permissions:
   contents: read
 
 jobs:
-  release-please:
-    name: Release Please (Automate Version & Changelog)
+  build-ga-package:
+    name: Build & Verify GA Package
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     outputs:
-      releases_created: ${{ steps.release.outputs.releases_created }}
-      pr: ${{ steps.release.outputs.pr }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-    steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
-        with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
-  build-release-package:
-    name: Build & Verify Release Package
-    needs: release-please
-    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
-    runs-on: ubuntu-latest
+      release_tag: ${{ steps.tag_info.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Select the released tag
+      - name: Determine and Tag Release
+        id: tag_info
+        env:
+          INPUT_TAG: ${{ inputs.version_tag }}
         run: |
-          TAG="${{ needs.release-please.outputs.tag_name }}"
-          if [ -n "$TAG" ]; then
-            git checkout "$TAG"
+          if [ -n "$INPUT_TAG" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$INPUT_TAG"
+            git push origin "$INPUT_TAG"
+            echo "tag=$INPUT_TAG" >> $GITHUB_OUTPUT
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
           fi
 
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
-      - name: Restore, build and test
+      - name: Restore, build, and test
         run: |
           dotnet restore
           dotnet build --configuration Release --no-restore
           dotnet test --configuration Release --no-build --verbosity normal
 
-      - name: Pack release packages
-        run: dotnet pack src/TypeSafe.AI/TypeSafe.AI.csproj --configuration Release --no-build --output artifacts/packages
+      - name: Pack GA release package
+        run: dotnet pack src/TypeSafe.AI/TypeSafe.AI.csproj --configuration Release --no-build --output artifacts/ga-packages
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-packages-${{ github.run_number }}
-          path: artifacts/packages/*
+          name: ga-packages-${{ github.run_number }}
+          path: artifacts/ga-packages/*
           if-no-files-found: error
 
   publish-nuget:
     name: Deploy to NuGet (Human-in-the-Loop)
-    needs: [release-please, build-release-package]
-    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    needs: build-ga-package
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -84,88 +74,32 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
-          name: release-packages-${{ github.run_number }}
-          path: artifacts/packages
+          name: ga-packages-${{ github.run_number }}
+          path: artifacts/ga-packages
 
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
-      - name: Publish to NuGet.org, GitHub Packages, and GitHub Release
+      - name: Create GitHub Release and Deploy to NuGet
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          TAG: ${{ needs.build-ga-package.outputs.release_tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
           PACKAGE_OWNER: ${{ github.repository_owner }}
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
-          for file in artifacts/packages/*.nupkg; do
+          echo "==> Creating GitHub Release with auto-generated notes for $TAG..."
+          gh release create "$TAG" artifacts/ga-packages/* --generate-notes
+
+          echo "==> Publishing to NuGet.org and GitHub Packages..."
+          for file in artifacts/ga-packages/*.nupkg; do
             if [ -n "$NUGET_API_KEY" ]; then
               dotnet nuget push "$file" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
             fi
             dotnet nuget push "$file" --api-key "$GH_TOKEN" --source "https://nuget.pkg.github.com/${PACKAGE_OWNER}/index.json" --skip-duplicate
           done
-          for file in artifacts/packages/*; do
-            if [ -f "$file" ] && [ -n "$RELEASE_TAG" ]; then
-              gh release upload "$RELEASE_TAG" "$file" --clobber
-            fi
-          done
-
-  publish-beta:
-    name: Build & Publish Beta to GitHub Packages
-    needs: release-please
-    if: ${{ needs.release-please.outputs.releases_created != 'true' && ((needs.release-please.outputs.pr != '' && needs.release-please.outputs.pr != 'null') || (github.event_name == 'workflow_dispatch' && inputs.publish_beta) || github.event_name == 'push') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Select the beta branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_BRANCH=$(echo '${{ needs.release-please.outputs.pr }}' | jq -r '.headBranchName // empty')
-          if [ -z "$PR_BRANCH" ]; then
-            PR_BRANCH=$(gh pr list --head "release-please--branches--main--components--TypeSafe.AI" --json headRefName -q '.[0].headRefName // empty')
-          fi
-          if [ -n "$PR_BRANCH" ]; then
-            echo "Checking out PR branch: $PR_BRANCH"
-            git checkout "$PR_BRANCH"
-          else
-            echo "No active release PR branch found; building beta from $(git branch --show-current)"
-          fi
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: global.json
-
-      - name: Build, test and pack beta package
-        run: |
-          BASE_VERSION=$(jq -r '.["."] // "0.1.0"' .release-please-manifest.json)
-          SUFFIX="${{ inputs.version_suffix || 'beta' }}.${{ github.run_number }}.${{ github.run_attempt }}"
-          BETA_VERSION="${BASE_VERSION}-${SUFFIX}"
-          dotnet restore
-          dotnet build --configuration Release --no-restore
-          dotnet test --configuration Release --no-build --verbosity normal
-          dotnet pack src/TypeSafe.AI/TypeSafe.AI.csproj --configuration Release -p:Version="$BETA_VERSION" --output artifacts/beta-packages
-
-      - name: Publish beta packages to GitHub Packages
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PACKAGE_OWNER: ${{ github.repository_owner }}
-        run: |
-          for file in artifacts/beta-packages/*.nupkg; do
-            dotnet nuget push "$file" --api-key "$GH_TOKEN" --source "https://nuget.pkg.github.com/${PACKAGE_OWNER}/index.json" --skip-duplicate
-          done
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: beta-packages-${{ github.run_number }}-${{ github.run_attempt }}
-          path: artifacts/beta-packages/*
-          if-no-files-found: error

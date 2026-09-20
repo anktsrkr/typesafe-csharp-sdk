@@ -1,4 +1,4 @@
-﻿<Project>
+<Project>
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -20,6 +20,8 @@
     <WarnOnPackingNonPackableProject>false</WarnOnPackingNonPackableProject>
     <!-- Zero-reflection / NativeAOT policy: AOT analyzers run on every shippable project.
          Test projects opt out (they legitimately reflect) via IsAotCompatible=false. -->
+    <MinVerTagPrefix>v</MinVerTagPrefix>
+    <MinVerDefaultPreReleaseIdentifiers>preview.0</MinVerDefaultPreReleaseIdentifiers>
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 </Project>
