@@ -5,21 +5,37 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   verify:
     name: Build, test, NativeAOT and pack
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+
       - name: Install native compiler prerequisites
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
-      - name: Verify package
-        shell: pwsh
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build solution
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Run unit tests
+        run: dotnet test --configuration Release --no-build --verbosity normal
+
+      - name: Verify NativeAOT smoke
         run: |
-          $version = ./eng/Get-PackageVersion.ps1
-          ./eng/Verify-Package.ps1 -Version $version
+          dotnet publish tests/TypeSafe.AI.AotSmoke/TypeSafe.AI.AotSmoke.csproj -c Release -r linux-x64 --no-restore -o aot-smoke
+          ./aot-smoke/TypeSafe.AI.AotSmoke
+
+      - name: Pack packages
+        run: dotnet pack src/TypeSafe.AI/TypeSafe.AI.csproj --configuration Release --no-build --output artifacts/packages
