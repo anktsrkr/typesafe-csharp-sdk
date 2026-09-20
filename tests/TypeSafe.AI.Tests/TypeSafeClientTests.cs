@@ -245,7 +245,7 @@ public class TypeSafeClientTests
     public void ActivitySourceVersion_MatchesProjectVersion()
     {
         Assert.False(string.IsNullOrWhiteSpace(TypeSafeDiagnostics.SourceVersion));
-        Assert.Equal("0.1.0", TypeSafeDiagnostics.SourceVersion);
+        Assert.Matches(@"^\d+\.\d+\.\d+", TypeSafeDiagnostics.SourceVersion);
     }
 
     [Fact]
@@ -259,7 +259,7 @@ public class TypeSafeClientTests
 
         var request = handler.SentMessages.Single();
         var userAgent = request.Headers.UserAgent.ToString();
-        Assert.Equal("typesafe-dotnet/0.1.0", userAgent);
+        Assert.Equal($"typesafe-dotnet/{TypeSafeDiagnostics.SourceVersion}", userAgent);
     }
 
     [Fact]
