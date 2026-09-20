@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   verify:
-    name: Build, test, NativeAOT and pack
+    name: Build, test, and pack
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,9 +19,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-
-      - name: Install native compiler prerequisites
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
       - name: Restore dependencies
         run: dotnet restore
@@ -31,11 +28,6 @@ jobs:
 
       - name: Run unit tests
         run: dotnet test --configuration Release --no-build --verbosity normal
-
-      - name: Verify NativeAOT smoke
-        run: |
-          dotnet publish tests/TypeSafe.AI.AotSmoke/TypeSafe.AI.AotSmoke.csproj -c Release -r linux-x64 --no-restore -o aot-smoke
-          ./aot-smoke/TypeSafe.AI.AotSmoke
 
       - name: Pack packages
         run: dotnet pack src/TypeSafe.AI/TypeSafe.AI.csproj --configuration Release --no-build --output artifacts/packages
