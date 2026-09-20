@@ -1,0 +1,230 @@
+name: Release & Publish
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish_beta:
+        description: 'Publish Beta packages immediately to GitHub Packages'
+        type: boolean
+        default: true
+      version_suffix:
+        description: 'Custom prerelease suffix (e.g. beta, preview, rc)'
+        type: string
+        default: 'beta'
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+
+jobs:
+  release-please:
+    name: Release Please (Trunk Evaluation)
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      paths_released: ${{ steps.release.outputs.paths_released }}
+      prs_created: ${{ steps.release.outputs.prs_created }}
+      pr: ${{ steps.release.outputs.pr }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      all_outputs: ${{ toJSON(steps.release.outputs) }}
+    steps:
+      - name: Run Release Please
+        uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # =========================================================================
+  # 1. GA PUBLISH JOB: Runs on NuGet.org when Release PR is MERGED into main
+  # =========================================================================
+  publish-ga:
+    name: Publish GA to NuGet.org
+    needs: release-please
+    runs-on: ubuntu-latest
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pack GA package
+        run: |
+          mkdir -p artifacts/packages
+          echo "Packing GA package for TypeSafe.AI..."
+          dotnet pack src/TypeSafe.AI --configuration Release --output artifacts/packages
+          ls -la artifacts/packages
+
+      - name: Publish GA to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::NUGET_API_KEY secret is not configured. Cannot publish GA packages to NuGet.org."
+            exit 1
+          fi
+          echo "==> Pushing GA packages to NuGet.org..."
+          dotnet nuget push "artifacts/packages/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source "https://api.nuget.org/v3/index.json" \
+            --skip-duplicate
+
+      - name: Publish GA to GitHub Packages as well
+        run: |
+          echo "==> Mirroring GA packages to GitHub Packages..."
+          dotnet nuget push "artifacts/packages/*.nupkg" \
+            --source "github" \
+            --skip-duplicate || true
+
+      - name: Upload GA Packages as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ga-packages-${{ github.run_number }}
+          path: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
+          if-no-files-found: warn
+
+      - name: Upload packages to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          outputs='${{ needs.release-please.outputs.all_outputs }}'
+          tag='${{ needs.release-please.outputs.tag_name }}'
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            tag=$(echo "$outputs" | jq -r '."tag_name" // ."--tag_name" // .[".--tag_name"] // empty')
+          fi
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            tag="v$(jq -r '.[".""] // .["src/TypeSafe.AI"] // "0.1.0"' .release-please-manifest.json)"
+          fi
+          echo "==> Uploading package assets to release tag: $tag..."
+          for file in artifacts/packages/TypeSafe.AI.*.nupkg artifacts/packages/TypeSafe.AI.*.snupkg; do
+            if [ -f "$file" ]; then
+              echo "Uploading $file to $tag"
+              gh release upload "$tag" "$file" --clobber
+            fi
+          done
+
+  # =========================================================================
+  # 2. BETA PUBLISH JOB: Runs on GitHub Packages when Release PR is CREATED/UPDATED
+  # =========================================================================
+  publish-beta:
+    name: Publish Beta to GitHub Packages
+    needs: release-please
+    runs-on: ubuntu-latest
+    if: ${{ (needs.release-please.outputs.prs_created == 'true' || needs.release-please.outputs.pr != '') || (github.event_name == 'workflow_dispatch' && inputs.publish_beta == true) }}
+    permissions:
+      contents: write
+      pull-requests: write
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout Release PR branch
+        run: |
+          pr_branch=$(echo '${{ needs.release-please.outputs.pr }}' | jq -r '.headBranchName // empty')
+          if [ -n "$pr_branch" ]; then
+            echo "Fetching and checking out PR branch: $pr_branch"
+            git fetch origin "$pr_branch":"$pr_branch" || true
+            git checkout "$pr_branch" || true
+          else
+            echo "Using current branch $(git branch --show-current)"
+          fi
+
+      - name: Setup .NET SDK & GitHub Packages Auth
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Pack Beta Packages
+        run: |
+          mkdir -p artifacts/beta-packages
+          suffix="${{ inputs.version_suffix || 'beta' }}.${{ github.run_number }}"
+          echo "Using prerelease suffix: $suffix"
+          
+          base_version=$(jq -r '.[".""] // .["src/TypeSafe.AI"] // "0.1.0"' .release-please-manifest.json | cut -d'-' -f1)
+          beta_version="${base_version}-${suffix}"
+          
+          echo "==> Packing TypeSafe.AI with Beta version: $beta_version..."
+          dotnet pack src/TypeSafe.AI --configuration Release --output artifacts/beta-packages -p:Version="$beta_version"
+          
+          ls -la artifacts/beta-packages
+
+      - name: Publish Beta Packages to GitHub Packages
+        run: |
+          echo "==> Pushing beta packages to GitHub Packages registry (nuget.pkg.github.com)..."
+          dotnet nuget push "artifacts/beta-packages/*.nupkg" \
+            --source "github" \
+            --skip-duplicate
+
+      - name: Upload Beta Packages as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-packages-${{ github.run_number }}
+          path: |
+            artifacts/beta-packages/*.nupkg
+            artifacts/beta-packages/*.snupkg
+          if-no-files-found: warn
+
+      - name: Comment on Release PR with Testing Instructions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_number=$(echo '${{ needs.release-please.outputs.pr }}' | jq -r '.number // empty')
+          if [ -n "$pr_number" ] && [ "$pr_number" != "null" ]; then
+            suffix="${{ inputs.version_suffix || 'beta' }}.${{ github.run_number }}"
+            owner="${{ github.repository_owner }}"
+            
+            base_ver=$(jq -r '.[".""] // .["src/TypeSafe.AI"] // "0.1.0"' .release-please-manifest.json | cut -d'-' -f1)
+            ver="${base_ver}-${suffix}"
+            
+            body="### 🚀 Beta Packages Published to GitHub Packages\n\n"
+            body+="A new preview build is ready for verification in this release candidate:\n\n"
+            body+="| Package | Beta Version | Install Command |\n"
+            body+="| :--- | :--- | :--- |\n"
+            body+="| **TypeSafe.AI** | \`${ver}\` | \`dotnet add package TypeSafe.AI --version ${ver} --prerelease\` |\n"
+            
+            body+="\n#### How to consume from GitHub Packages:\n"
+            body+="Add a \`nuget.config\` to your consumer application root:\n"
+            body+="\\`\\`\\`xml\n"
+            body+="<configuration>\n"
+            body+="  <packageSources>\n"
+            body+="    <add key=\"nuget.org\" value=\"https://api.nuget.org/v3/index.json\" />\n"
+            body+="    <add key=\"github\" value=\"https://nuget.pkg.github.com/${owner}/index.json\" />\n"
+            body+="  </packageSources>\n"
+            body+="  <packageSourceCredentials>\n"
+            body+="    <github>\n"
+            body+="      <add key=\"Username\" value=\"YOUR_GITHUB_USERNAME\" />\n"
+            body+="      <add key=\"ClearTextPassword\" value=\"YOUR_GITHUB_PAT\" />\n"
+            body+="    </github>\n"
+            body+="  </packageSourceCredentials>\n"
+            body+="</configuration>\n"
+            body+="\\`\\`\\`\n\n"
+            body+="> 📦 *You can also download the raw \\`.nupkg\\` files from the **Actions Workflow Artifacts** attached to run **#${{ github.run_number }}**.*\n\n"
+            body+="> ℹ️ *Once verified, **merge this Release PR** to promote these packages to **GA on NuGet.org**.*"
+            
+            echo -e "$body" | gh pr comment "$pr_number" --body-file - || true
+          fi
