@@ -92,23 +92,6 @@ public class QuestionBuilderTests
     }
 
     [Fact]
-    public void OmittedInstructions_AreAbsentFromTheWire()
-    {
-        var questions = Questions.Build(q => q
-            .Noul("is_human")
-            .Choice("team", o => o.Option("support").Option("engineering"))
-            .Score("risk", s => s.Level("low").Level("high")));
-
-        var noulWire = JsonSerializer.Serialize(questions["is_human"], TypeSafeJsonContext.Default.TypeSafeQuestion);
-        var choiceWire = JsonSerializer.Serialize(questions["team"], TypeSafeJsonContext.Default.TypeSafeQuestion);
-        var scoreWire = JsonSerializer.Serialize(questions["risk"], TypeSafeJsonContext.Default.TypeSafeQuestion);
-
-        Assert.Equal("""{"type":"noul"}""", noulWire);
-        Assert.Equal("""{"type":"choice","criteria":{"support":null,"engineering":null}}""", choiceWire);
-        Assert.Equal("""{"type":"score","criteria":["low","high"]}""", scoreWire);
-    }
-
-    [Fact]
     public void DuplicateIds_ThrowNamingTheId()
     {
         var exception = Assert.Throws<ArgumentException>(() => Questions.Build(q => q
@@ -122,7 +105,7 @@ public class QuestionBuilderTests
     [InlineData(" ")]
     [InlineData("")]
     public void BlankIds_Throw(string id) =>
-        Assert.Throws<ArgumentException>(() => Questions.Build(q => q.Noul(id)));
+        Assert.Throws<ArgumentException>(() => Questions.Build(q => q.Noul(id, "Question?")));
 
     [Fact]
     public void DuplicateAndBlankOptionLabels_Throw()
@@ -144,14 +127,6 @@ public class QuestionBuilderTests
         Assert.Throws<ArgumentException>(() => Questions.Build(q => q.Choice("tone", "Tone?", o => null!)));
         Assert.Throws<ArgumentException>(() => Questions.Build(q => q.Score("risk", "Risk?", s => null!)));
         Assert.Throws<ArgumentException>(() => Questions.Build(q => q));
-    }
-
-    [Fact]
-    public void ShortRubrics_AreStillCaughtByRequestCreation()
-    {
-        var questions = Questions.Build(q => q.Score("urgency", "How urgent?", "only"));
-
-        Assert.Throws<ArgumentException>(() => SystemOneRequest.Create("state", questions, "jev-latest"));
     }
 
     [Fact]

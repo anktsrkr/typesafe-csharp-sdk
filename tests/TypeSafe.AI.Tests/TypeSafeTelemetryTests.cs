@@ -41,7 +41,7 @@ public class TypeSafeTelemetryTests : IDisposable
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.OK, TypeSafeClientTests.SuccessBody,
             response => response.Headers.TryAddWithoutValidation("x-typesafe-request-id", "req-telemetry-123"));
-        using var client = TypeSafeClientTests.CreateClient(handler);
+        var client = TypeSafeClientTests.CreateClient(handler);
 
         const string stateText = "SECRET-STATE-TEXT";
         var modelTag = $"telemetry-{Guid.NewGuid():N}";
@@ -70,7 +70,7 @@ public class TypeSafeTelemetryTests : IDisposable
     {
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.Unauthorized); // 401 is never retried
-        using var client = TypeSafeClientTests.CreateClient(handler);
+        var client = TypeSafeClientTests.CreateClient(handler);
 
         var modelTag = $"telemetry-{Guid.NewGuid():N}";
         await Assert.ThrowsAsync<TypeSafeAuthenticationException>(
@@ -92,7 +92,7 @@ public class TypeSafeTelemetryTests : IDisposable
     {
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.OK, TypeSafeClientTests.SuccessBody);
-        using var client = TypeSafeClientTests.CreateClient(handler);
+        var client = TypeSafeClientTests.CreateClient(handler);
 
         var modelTag = $"telemetry-{Guid.NewGuid():N}";
         using var parent = new Activity("test.parent").SetIdFormat(ActivityIdFormat.W3C);

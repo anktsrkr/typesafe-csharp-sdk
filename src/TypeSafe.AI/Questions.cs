@@ -9,9 +9,8 @@ namespace TypeSafe.AI;
 [JsonDerivedType(typeof(Score), "score")]
 public abstract record TypeSafeQuestion
 {
-    /// <summary>The question to ask; optional in the documented contract.</summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public TypeSafeContent? Instructions { get; init; }
+    /// <summary>Required text, object, or array describing the question.</summary>
+    public required TypeSafeContent Instructions { get; init; }
 }
 
 /// <summary>A yes/no question: the answer approaches 1 for yes and 0 for no, near 0.5 is uncertainty.</summary>

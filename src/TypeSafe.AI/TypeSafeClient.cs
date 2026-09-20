@@ -1,71 +1,69 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Text;
-using Microsoft.Extensions.Http.Resilience;
-using Polly;
 using Polly.Timeout;
 
 namespace TypeSafe.AI;
 
-/// <summary>Evaluation activity source. Tag values are model/usage metadata only — never state,
-/// question text, credentials, or raw provider errors.</summary>
-internal static class TypeSafeDiagnostics
+internal static partial class TypeSafeDiagnostics
 {
     public const string SourceName = "TypeSafe.AI";
-
-    public static readonly ActivitySource Source = new(SourceName, "0.1.0");
+    public static readonly ActivitySource Source = new(SourceName, SourceVersion);
 }
 
-/// <summary>The default TypeSafe System One client: one request sent through the Polly resilience
-/// handler chain, with an operation-wide deadline covering body reads and parsing.</summary>
+/// <summary>System One client. Supports both caller-owned and self-owned HTTP transport.
+/// When created via <see cref="Create(TypeSafeClientOptions)"/>, the client owns the
+/// <see cref="HttpClient"/> and disposes it. When constructed directly, the caller retains
+/// ownership and is responsible for the transport's lifetime.</summary>
 public sealed class TypeSafeClient : ITypeSafeClient, IDisposable
 {
-    /// <summary>The named HttpClient used by the DI registration.</summary>
     public const string HttpClientName = "TypeSafe";
-
-    /// <summary>Request path appended relatively to the configured base URL.</summary>
     internal const string RequestPath = "v1/systemone";
-
     private readonly HttpClient _client;
-    private readonly TypeSafeClientOptions _options;
+    private readonly TypeSafeClientSettings _settings;
     private readonly Uri _endpoint;
     private readonly bool _ownsClient;
+    private bool _disposed;
 
-    /// <summary>Creates a self-contained client that owns its HTTP handler chain, including the
-    /// Polly resilience pipeline built from <paramref name="options"/> and the Bearer credential.</summary>
-    public TypeSafeClient(TypeSafeClientOptions options)
-        : this(CreateDefaultClient(options), options, ownsClient: true)
-    {
-    }
-
-    /// <summary>Creates a client over a supplied HttpClient, typically an IHttpClientFactory-created
-    /// one. The handler chain is expected to carry the resilience pipeline and the credential
-    /// (see <see cref="TypeSafeServiceCollectionExtensions.AddTypeSafeClient"/>).</summary>
+    /// <summary>Uses the supplied client without changing or disposing it. The caller configures
+    /// its handler chain; this constructor does not install retry or per-attempt timeout handlers.</summary>
     public TypeSafeClient(HttpClient client, TypeSafeClientOptions options)
-        : this(client, options, ownsClient: false)
-    {
-    }
+        : this(client, TypeSafeClientSettings.Create(options), ownsClient: false) { }
 
-    private TypeSafeClient(HttpClient client, TypeSafeClientOptions options, bool ownsClient)
+    internal TypeSafeClient(HttpClient client, TypeSafeClientSettings settings, bool ownsClient = false)
     {
         ArgumentNullException.ThrowIfNull(client);
-        ArgumentNullException.ThrowIfNull(options);
-        options.Validate();
         _client = client;
-        _options = options;
-        _endpoint = new Uri(new Uri(options.BaseUrl), RequestPath);
+        _settings = settings;
+        _endpoint = new Uri(new Uri(settings.BaseUrl), RequestPath);
         _ownsClient = ownsClient;
     }
 
-    /// <inheritdoc />
-    public async Task<SystemOneResponse> SystemOneAsync(TypeSafeContent state,
+    /// <summary>Creates a self-contained client that owns its <see cref="HttpClient"/>.
+    /// Dispose this instance when finished to release the underlying connection resources.</summary>
+    public static TypeSafeClient Create(TypeSafeClientOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var settings = TypeSafeClientSettings.Create(options);
+        var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        return new TypeSafeClient(client, settings, ownsClient: true);
+    }
+
+    public Task<SystemOneResponse> SystemOneAsync(TypeSafeContent state,
         IReadOnlyDictionary<string, TypeSafeQuestion> questions, string? model = null,
         CancellationToken cancellationToken = default)
     {
-        // Local validation happens before any network I/O; the request is immutable afterwards.
-        var request = SystemOneRequest.Create(state, questions, model ?? _options.DefaultModel);
+        cancellationToken.ThrowIfCancellationRequested();
+        var request = SystemOneRequest.Create(state, questions, model ?? _settings.DefaultModel);
+        return SystemOneAsync(request, cancellationToken);
+    }
 
+    public async Task<SystemOneResponse> SystemOneAsync(SystemOneRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        cancellationToken.ThrowIfCancellationRequested();
         using var activity = TypeSafeDiagnostics.Source.StartActivity("TypeSafe.SystemOne", ActivityKind.Client);
         activity?.SetTag("typesafe.model", request.Model);
         try
@@ -73,14 +71,13 @@ public sealed class TypeSafeClient : ITypeSafeClient, IDisposable
             var response = await SendAsync(request, cancellationToken).ConfigureAwait(false);
             activity?.SetTag("typesafe.usage.input_tokens", response.Usage.InputTokens);
             activity?.SetTag("typesafe.usage.output_tokens", response.Usage.OutputTokens);
-            if (response.RequestId is not null)
-                activity?.SetTag("typesafe.request_id", response.RequestId);
+            activity?.SetTag("typesafe.request_id", response.RequestId);
             activity?.SetStatus(ActivityStatusCode.Ok);
             return response;
         }
         catch (Exception exception)
         {
-            // Status description is the exception type name only; never provider bodies or user text.
+            // Never attach provider bodies, credentials, or user content.
             activity?.SetStatus(ActivityStatusCode.Error, exception.GetType().Name);
             throw;
         }
@@ -88,25 +85,24 @@ public sealed class TypeSafeClient : ITypeSafeClient, IDisposable
 
     private async Task<SystemOneResponse> SendAsync(SystemOneRequest request, CancellationToken callerToken)
     {
-        // HttpClient does not pre-check the token; fail fast before any network I/O.
-        callerToken.ThrowIfCancellationRequested();
-
         using var deadline = StartDeadline(callerToken);
         var token = deadline?.Token ?? callerToken;
         try
         {
-            // PostAsJsonAsync serializes through the source-generated contract; the buffered
-            // content is deterministic, so handler-level retries replay identical bytes.
-            using var response = await _client.PostAsJsonAsync(_endpoint, request,
-                TypeSafeJsonContext.Default.SystemOneRequest, token).ConfigureAwait(false);
+            using var message = new HttpRequestMessage(HttpMethod.Post, _endpoint)
+            {
+                Content = JsonContent.Create(request, TypeSafeJsonContext.Default.SystemOneRequest)
+            };
+            message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
+            message.Headers.UserAgent.Add(new ProductInfoHeaderValue("typesafe-dotnet", TypeSafeDiagnostics.SourceVersion));
+            using var response = await _client.SendAsync(message, HttpCompletionOption.ResponseHeadersRead,
+                token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                throw MapFailure(response);
+                throw await MapFailureAsync(response, token).ConfigureAwait(false);
 
-            var requestId = response.Headers.TryGetValues("x-typesafe-request-id", out var values)
-                ? values.FirstOrDefault()
-                : null;
-            var body = await ReadBoundedAsync(response.Content, _options.MaxResponseBytes, token).ConfigureAwait(false);
-            return TypeSafeResponseDecoder.DecodeSystemOne(body, requestId);
+            var requestId = Header(response, "x-typesafe-request-id");
+            await using var stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+            return await TypeSafeResponseReader.ReadAsync(stream, requestId, token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
         {
@@ -114,76 +110,58 @@ public sealed class TypeSafeClient : ITypeSafeClient, IDisposable
         }
         catch (OperationCanceledException exception)
         {
-            throw new TypeSafeTimeoutException("The TypeSafe evaluation did not complete within the configured budget.", exception);
+            throw new TypeSafeTimeoutException("The TypeSafe evaluation exceeded its timeout.", exception);
         }
         catch (TimeoutRejectedException exception)
         {
-            throw new TypeSafeTimeoutException("The TypeSafe evaluation did not complete within the configured budget.", exception);
+            throw new TypeSafeTimeoutException("The TypeSafe evaluation exceeded its timeout.", exception);
         }
         catch (HttpRequestException exception)
         {
-            throw new TypeSafeConnectionException("The TypeSafe request failed before a response was received.", exception);
+            throw new TypeSafeConnectionException("The TypeSafe HTTP exchange failed.", exception);
+        }
+        catch (IOException exception)
+        {
+            throw new TypeSafeConnectionException("The TypeSafe response could not be read.", exception);
         }
     }
 
     private CancellationTokenSource? StartDeadline(CancellationToken callerToken)
     {
-        if (_options.Retry.TotalTimeoutBudget is not { } budget)
+        if (_settings.TotalTimeoutBudget is not { } budget)
             return null;
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
         deadline.CancelAfter(budget);
         return deadline;
     }
 
-    private static Exception MapFailure(HttpResponseMessage response)
+    private static string? Header(HttpResponseMessage response, string name) =>
+        response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
+
+    private static async Task<TypeSafeException> MapFailureAsync(HttpResponseMessage response, CancellationToken token)
     {
-        var status = (int)response.StatusCode;
-        return status switch
+        var text = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+        var body = text.Length == 0 ? null : text;
+        var requestId = Header(response, "x-typesafe-request-id");
+        var retryAfter = Header(response, "Retry-After");
+        return (int)response.StatusCode switch
         {
-            401 => new TypeSafeAuthenticationException(),
-            422 => new TypeSafeValidationException(),
-            429 => new TypeSafeRateLimitException(),
-            529 => new TypeSafeOverloadedException(),
-            _ => new TypeSafeException($"TypeSafe returned the unexpected status code {status}.", response.StatusCode)
+            401 => new TypeSafeAuthenticationException(requestId, body, retryAfter),
+            422 => new TypeSafeValidationException(requestId, body, retryAfter),
+            429 => new TypeSafeRateLimitException(requestId, body, retryAfter),
+            529 => new TypeSafeOverloadedException(requestId, body, retryAfter),
+            _ => new TypeSafeException($"TypeSafe returned the unexpected status code {(int)response.StatusCode}.",
+                response.StatusCode, requestId: requestId, responseBody: body, retryAfter: retryAfter)
         };
     }
 
-    private static async Task<string> ReadBoundedAsync(HttpContent content, int maxBytes, CancellationToken token)
-    {
-        // The framework has no bounded read; responses must not be trusted to honor size limits.
-        await using var stream = await content.ReadAsStreamAsync(token).ConfigureAwait(false);
-        var buffer = new byte[8192];
-        using var memory = new MemoryStream();
-        int read;
-        while ((read = await stream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
-        {
-            if (memory.Length + read > maxBytes)
-                throw new TypeSafeProtocolException($"The TypeSafe response exceeds the configured limit of {maxBytes} bytes.");
-            memory.Write(buffer, 0, read);
-        }
-        return Encoding.UTF8.GetString(memory.ToArray());
-    }
-
-    private static HttpClient CreateDefaultClient(TypeSafeClientOptions options)
-    {
-        var pipelineBuilder = new ResiliencePipelineBuilder<HttpResponseMessage>();
-        TypeSafeResiliencePipeline.Configure(pipelineBuilder, options);
-        var handler = new ResilienceHandler(pipelineBuilder.Build())
-        {
-            InnerHandler = new SocketsHttpHandler { AllowAutoRedirect = false }
-        };
-        var client = new HttpClient(handler)
-        {
-            BaseAddress = new Uri(options.BaseUrl),
-            Timeout = Timeout.InfiniteTimeSpan
-        };
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.ApiKey);
-        return client;
-    }
-
-    /// <summary>Disposes the self-created handler chain; supplied clients stay owned by their factory.</summary>
+    /// <summary>Disposes the underlying <see cref="HttpClient"/> if this instance owns it
+    /// (i.e. was created via <see cref="Create(TypeSafeClientOptions)"/>). Calling
+    /// <see cref="SystemOneAsync"/> after disposal throws <see cref="ObjectDisposedException"/>.</summary>
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         if (_ownsClient)
             _client.Dispose();
     }

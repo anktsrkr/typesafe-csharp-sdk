@@ -9,7 +9,7 @@ public class RequestValidationTests
     [Fact]
     public void Create_RejectsNullInputs()
     {
-        var questions = new Dictionary<string, TypeSafeQuestion> { ["billing"] = new Noul() };
+        var questions = new Dictionary<string, TypeSafeQuestion> { ["billing"] = new Noul { Instructions = "Question?" } };
 
         Assert.Throws<ArgumentNullException>(() => SystemOneRequest.Create(null!, questions, "jev-latest"));
         Assert.Throws<ArgumentNullException>(() => SystemOneRequest.Create("state", null!, "jev-latest"));
@@ -22,9 +22,9 @@ public class RequestValidationTests
         Assert.Throws<ArgumentException>(() =>
             SystemOneRequest.Create("state", new Dictionary<string, TypeSafeQuestion>(), "jev-latest"));
         Assert.Throws<ArgumentException>(() =>
-            SystemOneRequest.Create("state", new Dictionary<string, TypeSafeQuestion> { [" "] = new Noul() }, "jev-latest"));
+            SystemOneRequest.Create("state", new Dictionary<string, TypeSafeQuestion> { [" "] = new Noul { Instructions = "Question?" } }, "jev-latest"));
         Assert.Throws<ArgumentException>(() =>
-            SystemOneRequest.Create("state", new Dictionary<string, TypeSafeQuestion> { ["billing"] = new Noul() }, " "));
+            SystemOneRequest.Create("state", new Dictionary<string, TypeSafeQuestion> { ["billing"] = new Noul { Instructions = "Question?" } }, " "));
     }
 
     [Fact]
@@ -32,7 +32,7 @@ public class RequestValidationTests
     {
         var questions = new Dictionary<string, TypeSafeQuestion>
         {
-            ["tone"] = new Choice { Criteria = new Dictionary<string, TypeSafeContent?>() }
+            ["tone"] = new Choice { Instructions = "Choose?", Criteria = new Dictionary<string, TypeSafeContent?>() }
         };
 
         Assert.Throws<ArgumentException>(() => SystemOneRequest.Create("state", questions, "jev-latest"));
@@ -43,7 +43,7 @@ public class RequestValidationTests
     {
         var questions = new Dictionary<string, TypeSafeQuestion>
         {
-            ["urgency"] = new Score { Criteria = ["low"] }
+            ["urgency"] = new Score { Instructions = "Score?", Criteria = ["low"] }
         };
 
         Assert.Throws<ArgumentException>(() => SystemOneRequest.Create("state", questions, "jev-latest"));
@@ -54,7 +54,7 @@ public class RequestValidationTests
     {
         var levels = new List<TypeSafeContent> { null!, "high" };
         Assert.Throws<ArgumentException>(() => SystemOneRequest.Create("state",
-            new Dictionary<string, TypeSafeQuestion> { ["urgency"] = new Score { Criteria = levels } }, "jev-latest"));
+            new Dictionary<string, TypeSafeQuestion> { ["urgency"] = new Score { Instructions = "Score?", Criteria = levels } }, "jev-latest"));
         Assert.Throws<ArgumentException>(() => SystemOneRequest.Create("state",
             new Dictionary<string, TypeSafeQuestion> { ["billing"] = null! }, "jev-latest"));
     }
@@ -63,14 +63,14 @@ public class RequestValidationTests
     public void Create_RejectsUnsupportedQuestionTypes()
     {
         Assert.Throws<ArgumentException>(() => SystemOneRequest.Create("state",
-            new Dictionary<string, TypeSafeQuestion> { ["odd"] = new BogusQuestion() }, "jev-latest"));
+            new Dictionary<string, TypeSafeQuestion> { ["odd"] = new BogusQuestion { Instructions = "Question?" } }, "jev-latest"));
     }
 
     [Fact]
     public void Create_AcceptsATwoLevelRubric()
     {
         var request = SystemOneRequest.Create("state",
-            new Dictionary<string, TypeSafeQuestion> { ["urgency"] = new Score { Criteria = ["low", "high"] } }, "jev-latest");
+            new Dictionary<string, TypeSafeQuestion> { ["urgency"] = new Score { Instructions = "Score?", Criteria = ["low", "high"] } }, "jev-latest");
 
         Assert.Single(request.Questions);
     }
@@ -83,13 +83,13 @@ public class RequestValidationTests
         var levels = new List<TypeSafeContent> { "low", "high" };
         var questions = new Dictionary<string, TypeSafeQuestion>
         {
-            ["tone"] = new Choice { Criteria = criteria },
-            ["urgency"] = new Score { Criteria = levels }
+            ["tone"] = new Choice { Instructions = "Choose?", Criteria = criteria },
+            ["urgency"] = new Score { Instructions = "Score?", Criteria = levels }
         };
 
         var request = SystemOneRequest.Create(state, questions, "jev-latest");
 
-        questions["sneaky"] = new Noul();
+        questions["sneaky"] = new Noul { Instructions = "Question?" };
         criteria["angry"] = null;
         state["ticket"] = "t-2";
         levels.Add("medium");

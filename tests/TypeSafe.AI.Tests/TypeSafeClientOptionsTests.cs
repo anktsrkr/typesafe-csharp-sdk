@@ -56,7 +56,6 @@ public class TypeSafeClientOptionsTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new TypeSafeClientOptions { ApiKey = "k", Retry = { BackoffMax = TimeSpan.Zero } }.Validate());
         Assert.Throws<ArgumentOutOfRangeException>(() => new TypeSafeClientOptions { ApiKey = "k", Retry = { PerAttemptTimeout = TimeSpan.Zero } }.Validate());
         Assert.Throws<ArgumentOutOfRangeException>(() => new TypeSafeClientOptions { ApiKey = "k", Retry = { TotalTimeoutBudget = TimeSpan.Zero } }.Validate());
-        Assert.Throws<ArgumentOutOfRangeException>(() => new TypeSafeClientOptions { ApiKey = "k", MaxResponseBytes = 0 }.Validate());
     }
 
     [Fact]
@@ -122,6 +121,35 @@ public class TypeSafeClientOptionsTests
             Environment.SetEnvironmentVariable("TYPESAFE_API_KEY", null);
             Environment.SetEnvironmentVariable("TYPESAFE_DEFAULT_MODEL", null);
         }
+    }
+
+    [Fact]
+    public void RetryProperty_CanBeAssigned()
+    {
+        var customRetry = new TypeSafeRetryOptions { MaxRetries = 5, UseJitter = false };
+        var options = new TypeSafeClientOptions { ApiKey = "sk-test", Retry = customRetry };
+
+        Assert.Same(customRetry, options.Retry);
+        Assert.Equal(5, options.Retry.MaxRetries);
+        Assert.False(options.Retry.UseJitter);
+    }
+
+    [Fact]
+    public void NullRetryProperty_IsRejected()
+    {
+        var options = new TypeSafeClientOptions { ApiKey = "sk-test", Retry = null! };
+        Assert.Throws<ArgumentNullException>(() => options.Validate());
+    }
+
+    [Fact]
+    public void SettingsToString_RedactsApiKey()
+    {
+        var options = new TypeSafeClientOptions { ApiKey = "super-secret-key-12345" };
+        var settings = TypeSafeClientSettings.Create(options);
+
+        var str = settings.ToString();
+        Assert.DoesNotContain("super-secret-key-12345", str);
+        Assert.Contains("[REDACTED]", str);
     }
 
     private static string ResolveModel(IConfiguration configuration, Action<TypeSafeClientOptions>? configure)

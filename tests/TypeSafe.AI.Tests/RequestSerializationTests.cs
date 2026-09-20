@@ -45,11 +45,11 @@ public class RequestSerializationTests
     [Fact]
     public void OptionalMembers_AreOmittedWhenNull()
     {
-        TypeSafeQuestion question = new Noul();
+        TypeSafeQuestion question = new Noul { Instructions = "Question?" };
 
         var wire = JsonSerializer.Serialize(question, TypeSafeJsonContext.Default.TypeSafeQuestion);
 
-        Assert.Equal("""{"type":"noul"}""", wire);
+        Assert.Equal("""{"type":"noul","instructions":"Question?"}""", wire);
     }
 
     [Fact]
@@ -75,14 +75,14 @@ public class RequestSerializationTests
     {
         var request = SystemOneRequest.Create(
             new JsonObject { ["ticket"] = new JsonObject { ["messages"] = new JsonArray("Charged twice!") } },
-            new Dictionary<string, TypeSafeQuestion> { ["is_urgent"] = new Noul() },
+            new Dictionary<string, TypeSafeQuestion> { ["is_urgent"] = new Noul { Instructions = "Question?" } },
             "jev-latest");
 
         var wire = JsonSerializer.Serialize(request, TypeSafeJsonContext.Default.SystemOneRequest);
 
         Assert.True(JsonNode.DeepEquals(
             JsonNode.Parse("""
-                {"state":{"ticket":{"messages":["Charged twice!"]}},"model":"jev-latest","questions":{"is_urgent":{"type":"noul"}}}
+                {"state":{"ticket":{"messages":["Charged twice!"]}},"model":"jev-latest","questions":{"is_urgent":{"type":"noul","instructions":"Question?"}}}
                 """),
             JsonNode.Parse(wire)), $"Actual wire JSON: {wire}");
     }

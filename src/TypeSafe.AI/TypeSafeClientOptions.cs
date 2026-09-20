@@ -22,8 +22,8 @@ public sealed class TypeSafeRetryOptions
     /// <summary>Bounds each HTTP attempt (connection and response headers). Null disables it.</summary>
     public TimeSpan? PerAttemptTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
-    /// <summary>Budget for the whole operation including all retries. Null disables the handler's
-    /// total timeout; the client-side deadline and caller cancellation remain available.</summary>
+    /// <summary>Budget including retries and body reads. Null disables the SDK deadline;
+    /// caller cancellation and the supplied HTTP client's timeout still apply.</summary>
     public TimeSpan? TotalTimeoutBudget { get; set; } = TimeSpan.FromSeconds(30);
 
     internal void Validate()
@@ -42,7 +42,7 @@ public sealed class TypeSafeRetryOptions
 }
 
 /// <summary>Configuration for the TypeSafe HTTP client. Validate secrets at startup and
-/// standalone construction; the reusable library never reads them from process-global state
+/// injected-client construction; the reusable library never reads them from process-global state
 /// except through <see cref="ApplyEnvironmentVariables"/>.</summary>
 public sealed class TypeSafeClientOptions
 {
@@ -58,11 +58,8 @@ public sealed class TypeSafeClientOptions
     /// <summary>Permits an http:// base URL for local development only.</summary>
     public bool AllowInsecureHttp { get; set; }
 
-    /// <summary>Upper bound for a response body in bytes; larger successful responses fail as protocol errors.</summary>
-    public int MaxResponseBytes { get; set; } = 4_194_304;
-
     /// <summary>Retry, backoff, and deadline configuration.</summary>
-    public TypeSafeRetryOptions Retry { get; } = new();
+    public TypeSafeRetryOptions Retry { get; set; } = new();
 
     /// <summary>Applies the documented environment aliases: TYPESAFE_API_KEY, TYPESAFE_BASE_URL,
     /// and TYPESAFE_DEFAULT_MODEL. Values from a later configuration source (the registration
@@ -91,8 +88,7 @@ public sealed class TypeSafeClientOptions
         ArgumentException.ThrowIfNullOrWhiteSpace(DefaultModel);
         ArgumentException.ThrowIfNullOrWhiteSpace(ApiKey);
         ValidateBaseUrl();
-        if (MaxResponseBytes <= 0)
-            throw new ArgumentOutOfRangeException(nameof(MaxResponseBytes), MaxResponseBytes, "MaxResponseBytes must be positive.");
+        ArgumentNullException.ThrowIfNull(Retry);
         Retry.Validate();
     }
 

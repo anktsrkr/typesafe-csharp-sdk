@@ -6,6 +6,7 @@
     <Project Path="samples/TypeSafe.Sample.HelloJav/TypeSafe.Sample.HelloJav.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/TypeSafe.AI.AotSmoke/TypeSafe.AI.AotSmoke.csproj" />
     <Project Path="tests/TypeSafe.AI.Tests/TypeSafe.AI.Tests.csproj" />
   </Folder>
 </Solution>

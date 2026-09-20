@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -13,7 +14,7 @@ namespace TypeSafe.AI.Tests;
 public class TypeSafeClientTests
 {
     internal const string SuccessBody = """
-        {"model":"jev-latest","answers":{"is_urgent":{"type":"noul","noul":0.92}},"usage":{"input_tokens":10,"output_tokens":2}}
+        {"model":"jev-latest","answers":{"is_urgent":{"type":"noul","noul":0.92},"tone":{"type":"choice","choice":"calm","probabilities":{"calm":0.8,"angry":0.2},"confidence":0.7},"urgency":{"type":"score","score":1.0,"legend":{"0":"low","1":"medium","2":"high"},"probabilities":{"0":0.1,"1":0.8,"2":0.1},"confidence":0.7}},"usage":{"input_tokens":10,"output_tokens":2}}
         """;
 
     internal static TypeSafeClient CreateClient(StubHttpHandler handler, Action<TypeSafeClientOptions>? configure = null)
@@ -26,7 +27,7 @@ public class TypeSafeClientTests
     }
 
     internal static IReadOnlyDictionary<string, TypeSafeQuestion> DefaultQuestions() => Questions.Build(q => q
-        .Noul("billing", "Is this about billing?")
+        .Noul("is_urgent", "Is this urgent?")
         .Choice("tone", "What is the tone?", "calm", "angry")
         .Score("urgency", "How urgent is this?", "low", "medium", "high"));
 
@@ -35,7 +36,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.OK, SuccessBody);
-        using var client = CreateClient(handler, o => o.BaseUrl = "https://gw.example.com/typesafe/");
+        var client = CreateClient(handler, o => o.BaseUrl = "https://gw.example.com/typesafe/");
 
         await client.SystemOneAsync("state", DefaultQuestions());
 
@@ -58,7 +59,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.OK, SuccessBody);
-        using var client = CreateClient(handler);
+        var client = CreateClient(handler);
 
         await client.SystemOneAsync("state", DefaultQuestions(), perCall);
 
@@ -71,7 +72,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.OK, SuccessBody, r => r.Headers.Add("x-typesafe-request-id", "req-42"));
-        using var client = CreateClient(handler);
+        var client = CreateClient(handler);
 
         var response = await client.SystemOneAsync("state", DefaultQuestions());
 
@@ -88,7 +89,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.Enqueue((HttpStatusCode)status);
-        using var client = CreateClient(handler);
+        var client = CreateClient(handler);
 
         var exception = await Assert.ThrowsAnyAsync<TypeSafeException>(
             () => client.SystemOneAsync("state", DefaultQuestions()));
@@ -104,7 +105,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.Enqueue((HttpStatusCode)status);
-        using var client = CreateClient(handler);
+        var client = CreateClient(handler);
 
         var exception = await Assert.ThrowsAnyAsync<TypeSafeException>(
             () => client.SystemOneAsync("state", DefaultQuestions()));
@@ -119,17 +120,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.OK, "not json");
-        using var client = CreateClient(handler);
-
-        await Assert.ThrowsAsync<TypeSafeProtocolException>(() => client.SystemOneAsync("state", DefaultQuestions()));
-    }
-
-    [Fact]
-    public async Task OversizedResponse_RaisesProtocolException()
-    {
-        var handler = new StubHttpHandler();
-        handler.Enqueue(HttpStatusCode.OK, SuccessBody);
-        using var client = CreateClient(handler, o => o.MaxResponseBytes = 64);
+        var client = CreateClient(handler);
 
         await Assert.ThrowsAsync<TypeSafeProtocolException>(() => client.SystemOneAsync("state", DefaultQuestions()));
     }
@@ -139,7 +130,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.EnqueueStalledBody();
-        using var client = CreateClient(handler, o => o.Retry.TotalTimeoutBudget = TimeSpan.FromMilliseconds(400));
+        var client = CreateClient(handler, o => o.Retry.TotalTimeoutBudget = TimeSpan.FromMilliseconds(400));
 
         var watch = DateTimeOffset.UtcNow;
         var exception = await Assert.ThrowsAsync<TypeSafeTimeoutException>(
@@ -154,7 +145,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.EnqueueStalledBody();
-        using var client = CreateClient(handler, o => o.Retry.TotalTimeoutBudget = null);
+        var client = CreateClient(handler, o => o.Retry.TotalTimeoutBudget = null);
         using var canceller = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -166,7 +157,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.OK, SuccessBody);
-        using var client = CreateClient(handler);
+        var client = CreateClient(handler);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => client.SystemOneAsync("state", DefaultQuestions(), cancellationToken: new CancellationToken(true)));
@@ -179,7 +170,7 @@ public class TypeSafeClientTests
     {
         var handler = new StubHttpHandler();
         handler.Enqueue(HttpStatusCode.Found, configure: r => r.Headers.Location = new Uri("https://api.typesafe.ai/v1/systemone"));
-        using var client = CreateClient(handler);
+        var client = CreateClient(handler);
 
         var exception = await Assert.ThrowsAnyAsync<TypeSafeException>(
             () => client.SystemOneAsync("state", DefaultQuestions()));
@@ -189,11 +180,12 @@ public class TypeSafeClientTests
     }
 
     [Fact]
-    public void StandaloneConstructor_ValidatesOptions()
+    public void InjectedConstructor_ValidatesOptions()
     {
         var options = new TypeSafeClientOptions { ApiKey = " " };
 
-        Assert.Throws<ArgumentException>(() => new TypeSafeClient(options));
+        using var http = new HttpClient(new StubHttpHandler());
+        Assert.Throws<ArgumentException>(() => new TypeSafeClient(http, options));
     }
 
     [Fact]
@@ -205,5 +197,84 @@ public class TypeSafeClientTests
         using var provider = services.BuildServiceProvider();
 
         Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<ITypeSafeClient>());
+    }
+
+    [Fact]
+    public void FactoryCreatedClient_DisposesOwnedHttpClient()
+    {
+        var options = new TypeSafeClientOptions { ApiKey = "sk-test" };
+        var client = TypeSafeClient.Create(options);
+
+        client.Dispose();
+
+        // After disposal, further calls must throw ObjectDisposedException.
+        Assert.Throws<ObjectDisposedException>(() =>
+            client.SystemOneAsync("state", DefaultQuestions()).GetAwaiter().GetResult());
+    }
+
+    [Fact]
+    public async Task CallerOwnedClient_DoesNotDisposeTheSuppliedHttpClient()
+    {
+        var handler = new StubHttpHandler();
+        handler.Enqueue(HttpStatusCode.OK, SuccessBody);
+        using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+        var client = new TypeSafeClient(http, new TypeSafeClientOptions { ApiKey = "sk-test" });
+
+        client.Dispose();
+
+        // The HttpClient must still be usable because the caller owns it.
+        handler.Enqueue(HttpStatusCode.OK, SuccessBody);
+        var response = await http.GetAsync("https://example.com");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task DisposedClient_ThrowsObjectDisposedException()
+    {
+        var handler = new StubHttpHandler();
+        handler.Enqueue(HttpStatusCode.OK, SuccessBody);
+        var client = CreateClient(handler);
+
+        client.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            () => client.SystemOneAsync("state", DefaultQuestions()));
+    }
+
+    [Fact]
+    public void ActivitySourceVersion_MatchesProjectVersion()
+    {
+        Assert.False(string.IsNullOrWhiteSpace(TypeSafeDiagnostics.SourceVersion));
+        Assert.Equal("0.1.0", TypeSafeDiagnostics.SourceVersion);
+    }
+
+    [Fact]
+    public async Task SendsUserAgentHeader_WithVersionAndProduct()
+    {
+        var handler = new StubHttpHandler();
+        handler.Enqueue(HttpStatusCode.OK, SuccessBody);
+        var client = CreateClient(handler);
+
+        await client.SystemOneAsync("state", DefaultQuestions());
+
+        var request = handler.SentMessages.Single();
+        var userAgent = request.Headers.UserAgent.ToString();
+        Assert.Equal("typesafe-dotnet/0.1.0", userAgent);
+    }
+
+    [Fact]
+    public async Task SystemOneAsync_AcceptsPreBuiltSystemOneRequest()
+    {
+        var handler = new StubHttpHandler();
+        handler.Enqueue(HttpStatusCode.OK, SuccessBody);
+        var client = CreateClient(handler);
+
+        var preBuilt = SystemOneRequest.Create("pre-built-state", DefaultQuestions(), "custom-model");
+        var response = await client.SystemOneAsync(preBuilt);
+
+        Assert.Equal(0.92, response.Nouls["is_urgent"].Noul);
+        var sent = JsonNode.Parse(Encoding.UTF8.GetString(handler.Requests.Single().Body))!;
+        Assert.Equal("custom-model", sent["model"]!.GetValue<string>());
+        Assert.Equal("pre-built-state", sent["state"]!.GetValue<string>());
     }
 }

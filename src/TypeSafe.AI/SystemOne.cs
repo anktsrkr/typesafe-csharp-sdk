@@ -30,8 +30,13 @@ public sealed record SystemOneRequest
         IReadOnlyDictionary<string, TypeSafeQuestion> questions, string model)
     {
         ArgumentNullException.ThrowIfNull(state);
-        ArgumentNullException.ThrowIfNull(questions);
         ArgumentException.ThrowIfNullOrWhiteSpace(model);
+        return new SystemOneRequest { State = state, Model = model, Questions = SnapshotQuestions(questions) };
+    }
+
+    internal static IReadOnlyDictionary<string, TypeSafeQuestion> SnapshotQuestions(IReadOnlyDictionary<string, TypeSafeQuestion> questions)
+    {
+        ArgumentNullException.ThrowIfNull(questions);
         if (questions.Count == 0)
             throw new ArgumentException("At least one question is required.", nameof(questions));
 
@@ -39,6 +44,8 @@ public sealed record SystemOneRequest
         foreach (var (id, question) in questions)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(id);
+            if (question is null || question.Instructions is null)
+                throw new ArgumentException($"The question '{id}' requires non-null instructions.", nameof(questions));
             snapshot[id] = question switch
             {
                 null => throw new ArgumentException($"The question '{id}' is null.", nameof(questions)),
@@ -48,20 +55,17 @@ public sealed record SystemOneRequest
                 _ => throw new ArgumentException($"The question '{id}' has an unsupported type {question.GetType().Name}.", nameof(questions))
             };
         }
-        return new SystemOneRequest
-        {
-            State = state,
-            Model = model,
-            Questions = new ReadOnlyDictionary<string, TypeSafeQuestion>(snapshot)
-        };
+        return new ReadOnlyDictionary<string, TypeSafeQuestion>(snapshot);
     }
 
-    private static TypeSafeQuestion SnapshotChoice(string id, TypeSafeContent? instructions,
+    private static TypeSafeQuestion SnapshotChoice(string id, TypeSafeContent instructions,
         IReadOnlyDictionary<string, TypeSafeContent?> criteria)
     {
         ArgumentNullException.ThrowIfNull(criteria);
-        if (criteria.Count == 0)
-            throw new ArgumentException($"The choice question '{id}' requires at least one option.");
+        if (criteria.Count is < 1 or > 255)
+            throw new ArgumentException($"The choice question '{id}' requires between 1 and 255 options.");
+        foreach (var label in criteria.Keys)
+            ArgumentException.ThrowIfNullOrWhiteSpace(label);
         return new Choice
         {
             Instructions = instructions,
@@ -69,12 +73,12 @@ public sealed record SystemOneRequest
         };
     }
 
-    private static TypeSafeQuestion SnapshotScore(string id, TypeSafeContent? instructions,
+    private static TypeSafeQuestion SnapshotScore(string id, TypeSafeContent instructions,
         IReadOnlyList<TypeSafeContent> criteria)
     {
         ArgumentNullException.ThrowIfNull(criteria);
-        if (criteria.Count < 2)
-            throw new ArgumentException($"The score question '{id}' requires at least two rubric levels.");
+        if (criteria.Count is < 2 or > 10)
+            throw new ArgumentException($"The score question '{id}' requires between 2 and 10 rubric levels.");
         for (var index = 0; index < criteria.Count; index++)
         {
             if (criteria[index] is null)
@@ -84,53 +88,110 @@ public sealed record SystemOneRequest
     }
 }
 
-/// <summary>A system-one reply: answers keyed by question id plus model and usage metadata.</summary>
-public sealed record SystemOneResponse
+/// <summary>An immutable snapshot of the provider's answers. IDs and semantic values are returned as received.</summary>
+public sealed class SystemOneResponse
 {
-    /// <summary>The model that answered.</summary>
-    public required string Model { get; init; }
+    public string Model { get; }
+    public IReadOnlyDictionary<string, TypeSafeAnswer> Answers { get; }
+    public TypeSafeUsage Usage { get; }
+    public string? RequestId { get; }
+    public IReadOnlyDictionary<string, NoulAnswer> Nouls { get; }
+    public IReadOnlyDictionary<string, ChoiceAnswer> Choices { get; }
+    public IReadOnlyDictionary<string, ScoreAnswer> Scores { get; }
 
-    /// <summary>All answers keyed by question id, including unrecognized answer kinds.</summary>
-    public required IReadOnlyDictionary<string, TypeSafeAnswer> Answers { get; init; }
-
-    /// <summary>Token usage; counts are null when the API did not report them.</summary>
-    public required TypeSafeUsage Usage { get; init; }
-
-    /// <summary>The x-typesafe-request-id response header value, attached by the client.</summary>
-    public string? RequestId { get; init; }
-
-    /// <summary>Yes/no answers keyed by question id; unrecognized kinds are excluded.</summary>
-    [JsonIgnore]
-    public IReadOnlyDictionary<string, NoulAnswer> Nouls => Group<NoulAnswer>();
-
-    /// <summary>Choice answers keyed by question id; unrecognized kinds are excluded.</summary>
-    [JsonIgnore]
-    public IReadOnlyDictionary<string, ChoiceAnswer> Choices => Group<ChoiceAnswer>();
-
-    /// <summary>Score answers keyed by question id; unrecognized kinds are excluded.</summary>
-    [JsonIgnore]
-    public IReadOnlyDictionary<string, ScoreAnswer> Scores => Group<ScoreAnswer>();
-
-    private IReadOnlyDictionary<string, T> Group<T>() where T : TypeSafeAnswer
+    public SystemOneResponse(string model, IReadOnlyDictionary<string, TypeSafeAnswer> answers,
+        TypeSafeUsage usage, string? requestId = null)
     {
-        var grouped = new Dictionary<string, T>();
-        foreach (var (id, answer) in Answers)
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentNullException.ThrowIfNull(answers);
+        ArgumentNullException.ThrowIfNull(usage);
+        Model = model;
+        Usage = usage;
+        RequestId = requestId;
+        var all = new Dictionary<string, TypeSafeAnswer>(answers.Count);
+        var nouls = new Dictionary<string, NoulAnswer>();
+        var choices = new Dictionary<string, ChoiceAnswer>();
+        var scores = new Dictionary<string, ScoreAnswer>();
+        foreach (var (id, answer) in answers)
         {
-            if (answer is T typed)
-                grouped[id] = typed;
+            ArgumentNullException.ThrowIfNull(answer);
+            var copy = answer switch
+            {
+                ChoiceAnswer choice => Snapshot(choice),
+                ScoreAnswer score => Snapshot(score),
+                UnknownAnswer unknown => unknown with { Raw = unknown.Raw.Clone() },
+                _ => answer
+            };
+            all.Add(id, copy);
+            switch (copy)
+            {
+                case NoulAnswer noul: nouls.Add(id, noul); break;
+                case ChoiceAnswer choice: choices.Add(id, choice); break;
+                case ScoreAnswer score: scores.Add(id, score); break;
+            }
         }
-        return new ReadOnlyDictionary<string, T>(grouped);
+        Answers = new ReadOnlyDictionary<string, TypeSafeAnswer>(all);
+        Nouls = new ReadOnlyDictionary<string, NoulAnswer>(nouls);
+        Choices = new ReadOnlyDictionary<string, ChoiceAnswer>(choices);
+        Scores = new ReadOnlyDictionary<string, ScoreAnswer>(scores);
+    }
+
+    private static ChoiceAnswer Snapshot(ChoiceAnswer answer)
+    {
+        ArgumentNullException.ThrowIfNull(answer.Choice);
+        return answer with { Probabilities = Copy(answer.Probabilities) };
+    }
+
+    private static ScoreAnswer Snapshot(ScoreAnswer answer)
+    {
+        ArgumentNullException.ThrowIfNull(answer.Legend);
+        foreach (var value in answer.Legend.Values) ArgumentNullException.ThrowIfNull(value);
+        return answer with { Legend = Copy(answer.Legend), Probabilities = Copy(answer.Probabilities) };
+    }
+
+    private static IReadOnlyDictionary<string, T> Copy<T>(IReadOnlyDictionary<string, T> values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        return new ReadOnlyDictionary<string, T>(new Dictionary<string, T>(values));
     }
 }
 
-/// <summary>The general-purpose TypeSafe System One client, mirroring the official SDKs.</summary>
+/// <summary>
+/// The general-purpose TypeSafe System One client, mirroring the official SDKs.
+/// When resolved via dependency injection, transport lifetimes are managed automatically
+/// by <see cref="IHttpClientFactory"/> (do not dispose).
+/// For standalone usage outside DI, instantiate <see cref="TypeSafeClient"/> directly
+/// which implements <see cref="IDisposable"/>.
+/// </summary>
 public interface ITypeSafeClient
 {
+    /// <summary>Evaluates a pre-built, immutable System One request in one upstream call.</summary>
+    /// <param name="request">The validated, immutable System One request.</param>
+    /// <param name="cancellationToken">Propagates caller cancellation.</param>
+    /// <returns>The provider's answers, usage statistics, and request metadata.</returns>
+    /// <exception cref="TypeSafeAuthenticationException">Authentication failed (401).</exception>
+    /// <exception cref="TypeSafeValidationException">The request was rejected (422).</exception>
+    /// <exception cref="TypeSafeRateLimitException">Rate limit exceeded (429).</exception>
+    /// <exception cref="TypeSafeOverloadedException">Service temporarily overloaded (529).</exception>
+    /// <exception cref="TypeSafeTimeoutException">Per-attempt or total timeout budget exceeded.</exception>
+    /// <exception cref="TypeSafeConnectionException">Network transport or read failure.</exception>
+    /// <exception cref="TypeSafeProtocolException">Invalid response format from the server.</exception>
+    Task<SystemOneResponse> SystemOneAsync(SystemOneRequest request,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Evaluates the state against the questions in one upstream request.</summary>
     /// <param name="state">The content to evaluate: a string, object, or array.</param>
     /// <param name="questions">Questions keyed by caller-chosen ids; must be nonempty.</param>
     /// <param name="model">Per-call model override; null uses the configured default.</param>
     /// <param name="cancellationToken">Propagates caller cancellation.</param>
+    /// <returns>The provider's answers, usage statistics, and request metadata.</returns>
+    /// <exception cref="TypeSafeAuthenticationException">Authentication failed (401).</exception>
+    /// <exception cref="TypeSafeValidationException">The request was rejected (422).</exception>
+    /// <exception cref="TypeSafeRateLimitException">Rate limit exceeded (429).</exception>
+    /// <exception cref="TypeSafeOverloadedException">Service temporarily overloaded (529).</exception>
+    /// <exception cref="TypeSafeTimeoutException">Per-attempt or total timeout budget exceeded.</exception>
+    /// <exception cref="TypeSafeConnectionException">Network transport or read failure.</exception>
+    /// <exception cref="TypeSafeProtocolException">Invalid response format from the server.</exception>
     Task<SystemOneResponse> SystemOneAsync(TypeSafeContent state,
         IReadOnlyDictionary<string, TypeSafeQuestion> questions, string? model = null,
         CancellationToken cancellationToken = default);

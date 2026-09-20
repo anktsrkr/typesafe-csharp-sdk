@@ -34,13 +34,13 @@ public sealed class QuestionBuilder
     }
 
     /// <summary>Adds a yes/no question. Optional outcome descriptions map to the documented true/false criteria.</summary>
-    public QuestionBuilder Noul(string id, string? instructions = null,
+    public QuestionBuilder Noul(string id, string instructions,
         string? whenTrue = null, string? whenFalse = null)
     {
         NoulCriteria? criteria = whenTrue is null && whenFalse is null
             ? null
             : new NoulCriteria { WhenTrue = ToContent(whenTrue), WhenFalse = ToContent(whenFalse) };
-        return Add(id, new Noul { Instructions = ToContent(instructions), Criteria = criteria });
+        return Add(id, new Noul { Instructions = TypeSafeContent.FromString(instructions), Criteria = criteria });
     }
 
     /// <summary>Adds a yes/no question with structured instructions and optional structured criteria.</summary>
@@ -54,25 +54,19 @@ public sealed class QuestionBuilder
     }
 
     /// <summary>Adds a yes/no question with pre-built criteria.</summary>
-    public QuestionBuilder Noul(string id, TypeSafeContent? instructions, NoulCriteria criteria)
+    public QuestionBuilder Noul(string id, TypeSafeContent instructions, NoulCriteria criteria)
     {
         ArgumentNullException.ThrowIfNull(criteria);
         return Add(id, new Noul { Instructions = instructions, Criteria = criteria });
     }
 
-    /// <summary>Adds a yes/no question without instructions and pre-built criteria.</summary>
-    public QuestionBuilder Noul(string id, NoulCriteria criteria)
-    {
-        ArgumentNullException.ThrowIfNull(criteria);
-        return Add(id, new Noul { Instructions = null, Criteria = criteria });
-    }
 
     /// <summary>Adds a choice question with undescribed labels.</summary>
     public QuestionBuilder Choice(string id, string instructions, params string[] labels)
-        => Choice(id, ToContent(instructions), labels);
+        => Choice(id, TypeSafeContent.FromString(instructions), labels);
 
     /// <summary>Adds a choice question with structured instructions and undescribed labels.</summary>
-    public QuestionBuilder Choice(string id, TypeSafeContent? instructions, params string[] labels)
+    public QuestionBuilder Choice(string id, TypeSafeContent instructions, params string[] labels)
     {
         ArgumentNullException.ThrowIfNull(labels);
         var criteria = new Dictionary<string, TypeSafeContent?>(labels.Length);
@@ -87,10 +81,10 @@ public sealed class QuestionBuilder
 
     /// <summary>Adds a choice question whose options are described through a sub-builder lambda.</summary>
     public QuestionBuilder Choice(string id, string instructions, Func<ChoiceOptions, ChoiceOptions> options)
-        => Choice(id, ToContent(instructions), options);
+        => Choice(id, TypeSafeContent.FromString(instructions), options);
 
     /// <summary>Adds a choice question with structured instructions whose options are described through a sub-builder lambda.</summary>
-    public QuestionBuilder Choice(string id, TypeSafeContent? instructions, Func<ChoiceOptions, ChoiceOptions> options)
+    public QuestionBuilder Choice(string id, TypeSafeContent instructions, Func<ChoiceOptions, ChoiceOptions> options)
     {
         ArgumentNullException.ThrowIfNull(options);
         var choiceOptions = options(new ChoiceOptions())
@@ -98,16 +92,13 @@ public sealed class QuestionBuilder
         return Add(id, new Choice { Instructions = instructions, Criteria = choiceOptions.ToCriteria() });
     }
 
-    /// <summary>Adds a choice question without instructions whose options are described through a sub-builder lambda.</summary>
-    public QuestionBuilder Choice(string id, Func<ChoiceOptions, ChoiceOptions> options)
-        => Choice(id, (TypeSafeContent?)null, options);
 
     /// <summary>Adds a rubric question with text levels.</summary>
     public QuestionBuilder Score(string id, string instructions, params string[] levels)
-        => Score(id, ToContent(instructions), levels);
+        => Score(id, TypeSafeContent.FromString(instructions), levels);
 
     /// <summary>Adds a rubric question with structured instructions and text levels.</summary>
-    public QuestionBuilder Score(string id, TypeSafeContent? instructions, params string[] levels)
+    public QuestionBuilder Score(string id, TypeSafeContent instructions, params string[] levels)
     {
         ArgumentNullException.ThrowIfNull(levels);
         var criteria = new List<TypeSafeContent>(levels.Length);
@@ -120,7 +111,7 @@ public sealed class QuestionBuilder
     }
 
     /// <summary>Adds a rubric question with structured instructions and structured levels.</summary>
-    public QuestionBuilder Score(string id, TypeSafeContent? instructions, params TypeSafeContent[] levels)
+    public QuestionBuilder Score(string id, TypeSafeContent instructions, params TypeSafeContent[] levels)
     {
         ArgumentNullException.ThrowIfNull(levels);
         var criteria = new List<TypeSafeContent>(levels.Length);
@@ -132,16 +123,13 @@ public sealed class QuestionBuilder
         return Add(id, new Score { Instructions = instructions, Criteria = criteria });
     }
 
-    /// <summary>Adds a rubric question without instructions and structured levels.</summary>
-    public QuestionBuilder Score(string id, params TypeSafeContent[] levels)
-        => Score(id, (TypeSafeContent?)null, levels);
 
     /// <summary>Adds a rubric question whose levels are built through a sub-builder lambda.</summary>
     public QuestionBuilder Score(string id, string instructions, Func<ScoreLevels, ScoreLevels> levels)
-        => Score(id, ToContent(instructions), levels);
+        => Score(id, TypeSafeContent.FromString(instructions), levels);
 
     /// <summary>Adds a rubric question with structured instructions whose levels are built through a sub-builder lambda.</summary>
-    public QuestionBuilder Score(string id, TypeSafeContent? instructions, Func<ScoreLevels, ScoreLevels> levels)
+    public QuestionBuilder Score(string id, TypeSafeContent instructions, Func<ScoreLevels, ScoreLevels> levels)
     {
         ArgumentNullException.ThrowIfNull(levels);
         var scoreLevels = levels(new ScoreLevels())
@@ -149,9 +137,6 @@ public sealed class QuestionBuilder
         return Add(id, new Score { Instructions = instructions, Criteria = scoreLevels.ToCriteria() });
     }
 
-    /// <summary>Adds a rubric question without instructions whose levels are built through a sub-builder lambda.</summary>
-    public QuestionBuilder Score(string id, Func<ScoreLevels, ScoreLevels> levels)
-        => Score(id, (TypeSafeContent?)null, levels);
 
     private QuestionBuilder Add(string id, TypeSafeQuestion question)
     {
@@ -169,7 +154,7 @@ public sealed class QuestionBuilder
             throw new ArgumentException("The build lambda must return the builder.", nameof(build));
         if (_questions.Count == 0)
             throw new ArgumentException("At least one question is required.", nameof(build));
-        return new ReadOnlyDictionary<string, TypeSafeQuestion>(_questions);
+        return SystemOneRequest.SnapshotQuestions(_questions);
     }
 }
 
@@ -192,7 +177,7 @@ public sealed class ChoiceOptions
     }
 
     internal IReadOnlyDictionary<string, TypeSafeContent?> ToCriteria()
-        => new ReadOnlyDictionary<string, TypeSafeContent?>(_options);
+        => new ReadOnlyDictionary<string, TypeSafeContent?>(new Dictionary<string, TypeSafeContent?>(_options));
 }
 
 /// <summary>Accumulates ordered score rubric levels.</summary>
@@ -212,5 +197,5 @@ public sealed class ScoreLevels
         return this;
     }
 
-    internal IReadOnlyList<TypeSafeContent> ToCriteria() => _levels.AsReadOnly();
+    internal IReadOnlyList<TypeSafeContent> ToCriteria() => Array.AsReadOnly(_levels.ToArray());
 }

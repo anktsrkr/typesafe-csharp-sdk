@@ -16,7 +16,7 @@ public sealed class TypeSafeContent
 {
     private readonly JsonNode _root;
 
-    private TypeSafeContent(JsonNode root) => _root = root;
+    internal TypeSafeContent(JsonNode root) => _root = root;
 
     /// <summary>Creates content from plain text.</summary>
     public static TypeSafeContent FromString(string text)
@@ -61,12 +61,16 @@ public sealed class TypeSafeContentJsonConverter : JsonConverter<TypeSafeContent
 {
     public override TypeSafeContent Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        using var document = JsonDocument.ParseValue(ref reader);
-        return document.RootElement.ValueKind switch
+        var node = JsonNode.Parse(ref reader);
+        if (node is null)
+            throw new JsonException("TypeSafe content root must be a non-null string, object, or array, but was null.");
+
+        var kind = node.GetValueKind();
+        return kind switch
         {
             JsonValueKind.String or JsonValueKind.Object or JsonValueKind.Array
-                => TypeSafeContent.FromJson(JsonNode.Parse(document.RootElement.GetRawText())!),
-            _ => throw new JsonException($"TypeSafe content must be a string, object, or array, but was {document.RootElement.ValueKind}.")
+                => new TypeSafeContent(node),
+            _ => throw new JsonException($"TypeSafe content must be a string, object, or array, but was {kind}.")
         };
     }
 

@@ -9,6 +9,7 @@ internal sealed class StubHttpHandler : HttpMessageHandler
     private readonly Queue<Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>> _responses = new();
 
     public List<(Uri? Uri, byte[] Body, string? Authorization, string? ContentType)> Requests { get; } = [];
+    public List<HttpRequestMessage> SentMessages { get; } = [];
     public List<DateTimeOffset> AttemptTimes { get; } = [];
 
     public void Enqueue(HttpStatusCode statusCode, string? json = null, Action<HttpResponseMessage>? configure = null) =>
@@ -46,6 +47,7 @@ internal sealed class StubHttpHandler : HttpMessageHandler
         Requests.Add((request.RequestUri, body,
             request.Headers.Authorization?.ToString(),
             request.Content?.Headers.ContentType?.ToString()));
+        SentMessages.Add(request);
         return await _responses.Dequeue()(request, cancellationToken);
     }
 }
