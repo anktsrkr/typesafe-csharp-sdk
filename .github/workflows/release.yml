@@ -12,11 +12,13 @@ on:
         description: Prerelease label
         type: string
         default: beta
+
 permissions:
   contents: read
 
 jobs:
   release-please:
+    name: Release Please (Automate Version & Changelog)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -33,13 +35,11 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  publish-ga:
+  build-release-package:
+    name: Build & Verify Release Package
     needs: release-please
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,7 +65,35 @@ jobs:
       - name: Pack release packages
         run: dotnet pack src/TypeSafe.AI/TypeSafe.AI.csproj --configuration Release --no-build --output artifacts/packages
 
-      - name: Publish to NuGet and GitHub Packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ github.run_number }}
+          path: artifacts/packages/*
+          if-no-files-found: error
+
+  publish-nuget:
+    name: Deploy to NuGet (Human-in-the-Loop)
+    needs: [release-please, build-release-package]
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://www.nuget.org/packages/TypeSafe.AI
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages-${{ github.run_number }}
+          path: artifacts/packages
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Publish to NuGet.org, GitHub Packages, and GitHub Release
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -84,13 +112,8 @@ jobs:
             fi
           done
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ga-packages-${{ github.run_number }}
-          path: artifacts/packages/*
-          if-no-files-found: error
-
   publish-beta:
+    name: Build & Publish Beta to GitHub Packages
     needs: release-please
     if: ${{ (needs.release-please.outputs.pr != '' && needs.release-please.outputs.pr != 'null') || (github.event_name == 'workflow_dispatch' && inputs.publish_beta) }}
     runs-on: ubuntu-latest
