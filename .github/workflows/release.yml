@@ -115,21 +115,30 @@ jobs:
   publish-beta:
     name: Build & Publish Beta to GitHub Packages
     needs: release-please
-    if: ${{ (needs.release-please.outputs.pr != '' && needs.release-please.outputs.pr != 'null') || (github.event_name == 'workflow_dispatch' && inputs.publish_beta) }}
+    if: ${{ needs.release-please.outputs.releases_created != 'true' && ((needs.release-please.outputs.pr != '' && needs.release-please.outputs.pr != 'null') || (github.event_name == 'workflow_dispatch' && inputs.publish_beta) || github.event_name == 'push') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Select the beta branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_BRANCH=$(echo '${{ needs.release-please.outputs.pr }}' | jq -r '.headBranchName // empty')
+          if [ -z "$PR_BRANCH" ]; then
+            PR_BRANCH=$(gh pr list --head "release-please--branches--main--components--TypeSafe.AI" --json headRefName -q '.[0].headRefName // empty')
+          fi
           if [ -n "$PR_BRANCH" ]; then
+            echo "Checking out PR branch: $PR_BRANCH"
             git checkout "$PR_BRANCH"
+          else
+            echo "No active release PR branch found; building beta from $(git branch --show-current)"
           fi
 
       - uses: actions/setup-dotnet@v4
